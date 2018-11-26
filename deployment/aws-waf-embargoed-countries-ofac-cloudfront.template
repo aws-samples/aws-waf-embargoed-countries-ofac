@@ -1,0 +1,327 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description" : "[Nested CloudFront] Automation to enforce compliance by filtering incoming traffic from embargoed countries as defined by Office Of Foreign Asset Control (OFAC). **NOTICE** Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved. Licensed under the Amazon Software License (the License). You may not use this file except in compliance with the License. A copy of the License is located at http://aws.amazon.com/asl/ or in the license file accompanying this file. This file is distributed on an AS IS BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, express or implied. See the License for the specific language governing permissions and limitations under the License.",
+  "Parameters": {
+    "WebAclId": {"Type": "String"},
+    "S3Bucket": {"Type": "String"},
+    "KeyPrefix": {"Type": "String"},
+    "LambdaCodeBucket": {"Type": "String"},
+    "EmbargoedCountriesBucket": {"Type": "String"},
+    "EmbargoedCountriesKey": {"Type": "String"},
+    "ParentStackName": {"Type": "String"},
+    "RuleAction": {"Type": "String"},
+    "RulePriorityIp": {"Type": "Number"},
+    "RulePriorityGeo": {"Type": "Number"}
+  },
+
+  "Conditions": {
+    "CreateWebACL": {"Fn::Equals": [{"Ref": "WebAclId"}, ""]}
+  },
+
+  "Resources": {
+    "WAFEmbargoedIpSet": {
+      "Type" : "AWS::WAF::IPSet",
+      "Properties" : {
+        "IPSetDescriptors" : [],
+        "Name" : "Embargoed IP set"
+      }
+    },
+    "WAFEmbargoedIpsRule": {
+      "Type": "AWS::WAF::Rule",
+      "Properties": {
+        "Name": {"Fn::Join": [" - ", [{"Ref": "ParentStackName"}, "Embargoed IPs"]]},
+        "MetricName": {"Fn::Join": ["", [{"Fn::Join":["", {"Fn::Split": ["-", {"Ref": "AWS::StackName"}]}]}, "IPRule"]]},
+        "Predicates": [{
+          "DataId" : {  "Ref" : "WAFEmbargoedIpSet" },
+          "Negated" : false,
+          "Type" : "IPMatch"
+        }]
+      }
+    },
+    "WAFEmbargoedCountriesRule": {
+      "Type": "AWS::WAF::Rule",
+      "Properties": {
+        "Name": {"Fn::Join": [" - ", [{"Ref": "ParentStackName"}, "Embargoed Countries"]]},
+        "MetricName": {"Fn::Join": ["", [{"Fn::Join":["", {"Fn::Split": ["-", {"Ref": "AWS::StackName"}]}]}, "GeoRule"]]},
+        "Predicates": []
+      }
+    },
+    "WAFWebACL": {
+      "Type": "AWS::WAF::WebACL",
+      "Condition": "CreateWebACL",
+      "Properties": {
+        "Name": {
+          "Ref": "ParentStackName"
+        },
+        "DefaultAction": {
+          "Type": "ALLOW"
+        },
+        "MetricName": {"Fn::Join": ["", [{"Fn::Join":["", {"Fn::Split": ["-", {"Ref": "AWS::StackName"}]}]}, "WebAcl"]]},
+        "Rules": [{
+          "Action": {"Type": {"Ref": "RuleAction"}},
+          "Priority": {"Ref": "RulePriorityIp"},
+          "RuleId": {"Ref": "WAFEmbargoedIpsRule"}
+        }]
+      }
+    },
+    "CountriesParserRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": ["lambda.amazonaws.com"]},"Action": [ "sts:AssumeRole" ]
+          }]
+        },
+        "Path": "/",
+        "RoleName": {"Fn::Join": ["",[{"Ref": "ParentStackName"},"CPRole-",{"Ref": "AWS::Region"}]]},
+        "Policies": [{
+          "PolicyName": {"Fn::Join": ["", [{"Ref": "ParentStackName"}, "CPLogPolicy"]]},
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": { "Fn::Join" : ["", ["arn:aws:logs:",{"Ref" : "AWS::Region"},":",{ "Ref" : "AWS::AccountId" }, ":log-group:/aws/lambda/*" ]]}
+            }]
+          }
+        }, {
+          "PolicyName": {"Fn::Join": ["", [{"Ref": "ParentStackName"}, "CPS3Access"]]},
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": [
+                "s3:GetObject"
+              ],
+              "Resource": {"Fn::Join": ["", ["arn:aws:s3:::*/*"]]}
+            }]
+          }
+        }, {
+          "PolicyName": {"Fn::Join": ["", [{"Ref": "ParentStackName"}, "CPWafAccess"]]},
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": "waf:GetChangeToken",
+              "Resource": "*"
+            }, {
+              "Effect": "Allow",
+              "Action": [
+                "waf:GetIPSet",
+                "waf:UpdateIPSet"
+              ],
+              "Resource": {"Fn::Join": ["", ["arn:aws:waf::", {"Ref": "AWS::AccountId"},":ipset/", {"Ref": "WAFEmbargoedIpSet"}]]}
+            }, {
+              "Effect": "Allow",
+              "Action": [
+                "waf:GetGeoMatchSet",
+                "waf:UpdateGeoMatchSet",
+              ],
+              "Resource": {"Fn::Join": ["", ["arn:aws:waf::", {"Ref": "AWS::AccountId"},":geomatchset/*"]]}
+            }]
+          }
+        }]
+      }
+    },
+    "CountriesParserFunction": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": ["CountriesParserRole", "GeoMatchSet"],
+      "Properties": {
+        "Code": {
+          "S3Bucket": {"Ref": "LambdaCodeBucket"},
+          "S3Key": {"Fn::Join": ["/", [{"Ref": "KeyPrefix"}, "embargoed-countries-parser.zip"]]}
+        },
+        "MemorySize": "3008",
+        "Handler": "lambda_function.lambda_handler",
+        "Role": {"Fn::GetAtt": ["CountriesParserRole", "Arn"]},
+        "Timeout": "300",
+        "Runtime": "python3.6",
+        "Description": "AWS WAF embargoed countries OFAC parser",
+        "Environment": {
+            "Variables": {
+              "LOG_LEVEL": "INFO",
+              "API_TYPE": "waf",
+              "GEO_MATCH_SET_ID": {"Fn::GetAtt": ["GeoMatchSet", "Id"]},
+              "IP_SET_ID": {"Ref": "WAFEmbargoedIpSet"}
+          }
+        }
+      }
+    },
+    "LambdaInvokePermissionCountriesParserFunction": {
+      "Type": "AWS::Lambda::Permission",
+      "DependsOn": ["CountriesParserFunction"],
+      "Properties": {
+        "FunctionName": {"Fn::GetAtt": ["CountriesParserFunction", "Arn"]},
+        "Action": "lambda:InvokeFunction",
+        "Principal": "s3.amazonaws.com",
+        "SourceAccount": {"Ref": "AWS::AccountId"},
+        "SourceArn": {"Fn::Join": ["", ["arn:aws:s3:::", {"Ref": "EmbargoedCountriesBucket"}]]}
+      }
+    },
+    "CustomResourceRole": {
+      "Type": "AWS::IAM::Role",
+      "DependsOn": ["WAFEmbargoedIpsRule", "WAFEmbargoedCountriesRule"],
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": ["lambda.amazonaws.com"]},"Action": [ "sts:AssumeRole" ]
+          }]
+        },
+        "Path": "/",
+        "RoleName": {"Fn::Join": ["",[{"Ref": "ParentStackName"},"CRRole-",{"Ref": "AWS::Region"}]]},
+        "Policies": [{
+          "PolicyName": {"Fn::Join": ["", [{"Ref": "ParentStackName"}, "CRLogPolicy"]]},
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": { "Fn::Join" : ["", ["arn:aws:logs:",{"Ref" : "AWS::Region"},":",{ "Ref" : "AWS::AccountId" }, ":log-group:/aws/lambda/*" ]]}
+            }]
+          }
+        }, {
+          "PolicyName": {"Fn::Join": ["", [{"Ref": "ParentStackName"}, "CRS3Access"]]},
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": [
+                "s3:ListBucket",
+                "s3:PutBucketNotification"
+              ],
+              "Resource": {"Fn::Join": ["", ["arn:aws:s3:::", {"Ref": "EmbargoedCountriesBucket"}]]}
+            }, {
+              "Effect": "Allow",
+              "Action": [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject"
+              ],
+              "Resource": {"Fn::Join": ["", ["arn:aws:s3:::", {"Ref": "EmbargoedCountriesBucket"}, "/*"]]}
+            }]
+          }
+        }, {
+          "PolicyName": {"Fn::Join": ["", [{"Ref": "ParentStackName"}, "CRWafAccess"]]},
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": "waf:GetChangeToken",
+              "Resource": "*"
+            }, {
+              "Effect": "Allow",
+              "Action": [
+                "waf:GetWebACL",
+                "waf:UpdateWebACL"
+              ],
+              "Resource": {"Fn::Join": ["", ["arn:aws:waf::", {"Ref": "AWS::AccountId"},":webacl/*"]]}
+            }, {
+              "Effect": "Allow",
+              "Action": [
+                "waf:GetRule",
+                "waf:UpdateRule",
+                "waf:UpdateWebACL"
+              ],
+              "Resource": [
+                {"Fn::Join": ["", ["arn:aws:waf::", {"Ref": "AWS::AccountId"},":rule/", {"Ref": "WAFEmbargoedIpsRule"}]]},
+                {"Fn::Join": ["", ["arn:aws:waf::", {"Ref": "AWS::AccountId"},":rule/", {"Ref": "WAFEmbargoedCountriesRule"}]]}
+              ]
+            }, {
+              "Effect": "Allow",
+              "Action": [
+                "waf:GetIPSet",
+                "waf:UpdateIPSet",
+                "waf:UpdateRule"
+              ],
+              "Resource": {"Fn::Join": ["", ["arn:aws:waf::", {"Ref": "AWS::AccountId"},":ipset/", {"Ref": "WAFEmbargoedIpSet"}]]}
+            }, {
+              "Effect": "Allow",
+              "Action": [
+                "waf:CreateGeoMatchSet",
+                "waf:GetGeoMatchSet",
+                "waf:UpdateGeoMatchSet",
+                "waf:DeleteGeoMatchSet",
+                "waf:UpdateRule"
+              ],
+              "Resource": {"Fn::Join": ["", ["arn:aws:waf::", {"Ref": "AWS::AccountId"},":geomatchset/*"]]}
+            }]
+          }
+        }]
+      }
+    },
+    "CustomResourceFunction": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": ["CustomResourceRole"],
+      "Properties": {
+        "Code": {
+          "S3Bucket": {"Ref": "LambdaCodeBucket"},
+          "S3Key": {"Fn::Join": ["/", [{"Ref": "KeyPrefix"}, "custom-resource.zip"]]}
+        },
+        "MemorySize": "3008",
+        "Handler": "lambda_function.lambda_handler",
+        "Role": {"Fn::GetAtt": ["CustomResourceRole", "Arn"]},
+        "Timeout": "300",
+        "Runtime": "python3.6",
+        "Description": "AWS WAF embargoed countries OFAC custom resource",
+        "Environment": {
+            "Variables": {
+              "LOG_LEVEL": "INFO",
+              "API_TYPE": "waf"
+          }
+        }
+      }
+    },
+    "GeoMatchSet": {
+      "Type": "Custom::GeoMatchSet",
+      "DependsOn": ["CustomResourceFunction"],
+      "Properties": {
+        "ServiceToken": {"Fn::GetAtt": ["CustomResourceFunction","Arn"]},
+        "ParentStackName": {"Ref": "ParentStackName"}
+      }
+    },
+    "CountriesParserEvent": {
+      "Type": "Custom::CountriesParserEvent",
+      "DependsOn": ["CustomResourceFunction", "CountriesParserFunction"],
+      "Properties": {
+        "ServiceToken": {"Fn::GetAtt": ["CustomResourceFunction","Arn"]},
+        "CountriesParserArn": {"Fn::GetAtt": ["CountriesParserFunction","Arn"]},
+        "OringBucket": {"Ref": "S3Bucket"},
+        "EmbargoedCountriesBucket": {"Ref": "EmbargoedCountriesBucket"},
+        "EmbargoedCountriesKey": {"Ref": "EmbargoedCountriesKey"}
+      }
+    },
+    "WafAssociations": {
+      "Type": "Custom::WafAssociations",
+      "DependsOn": ["WAFEmbargoedIpsRule", "WAFEmbargoedCountriesRule", "CustomResourceFunction", "GeoMatchSet", "LambdaInvokePermissionCountriesParserFunction"],
+      "Properties": {
+        "ServiceToken": {"Fn::GetAtt": ["CustomResourceFunction","Arn"]},
+        "WebAclId": {"Fn::If": ["CreateWebACL", {"Ref": "WAFWebACL"}, {"Ref": "WebAclId"}]},
+        "RuleAction": {"Ref": "RuleAction"},
+        "IpSetId": {"Ref": "WAFEmbargoedIpSet"},
+        "RuleIdIp": {"Ref": "WAFEmbargoedIpsRule"},
+        "RulePriorityIp": {"Ref": "RulePriorityIp"},
+        "GeoMatchSetId": {"Fn::GetAtt": ["GeoMatchSet", "Id"]},
+        "RuleIdGeo": {"Ref": "WAFEmbargoedCountriesRule"},
+        "RulePriorityGeo": {"Ref": "RulePriorityGeo"}
+      }
+    }
+  },
+  "Outputs": {
+    "WebAclId": {
+      "Description": "Web Acl ID",
+      "Value": {"Fn::If": ["CreateWebACL", {"Ref": "WAFWebACL"}, {"Ref": "WebAclId"}]}
+    }
+  }
+}

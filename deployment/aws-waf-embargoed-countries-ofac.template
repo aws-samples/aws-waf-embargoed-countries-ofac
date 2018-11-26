@@ -1,0 +1,247 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description" : "[Main] Automation to enforce compliance by filtering incoming traffic from embargoed countries as defined by Office Of Foreign Asset Control (OFAC). **NOTICE** Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved. Licensed under the Amazon Software License (the License). You may not use this file except in compliance with the License. A copy of the License is located at http://aws.amazon.com/asl/ or in the license file accompanying this file. This file is distributed on an AS IS BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, express or implied. See the License for the specific language governing permissions and limitations under the License.",
+  "Metadata" : {
+    "AWS::CloudFormation::Interface" : {
+     "ParameterLabels" : {
+        "EndpointType" : { "default" : "Endpoint Type" },
+        "WebAclId" : { "default" : "WebACL ID" },
+        "RuleAction" : { "default" : "Rule Action" },
+        "RulePriorityIp" : { "default" : "Rule Priority - Ip Addresses" },
+        "RulePriorityGeo" : { "default" : "Rule Priority - Geo" }
+     }
+    }
+  },
+  "Parameters": {
+    "EndpointType": {
+      "Description": "Select the type of resource being used",
+      "Default": "CloudFront",
+      "AllowedValues": ["CloudFront", "ALB"],
+      "Type": "String"
+    },
+    "WebAclId": {
+      "Description": "Insert the webACL id (or leave it empty to create a new one)",
+      "Type": "String"
+    },
+    "RuleAction": {
+      "Type": "String",
+      "Default": "BLOCK",
+      "AllowedValues": ["BLOCK", "COUNT"],
+      "Description": "Select the action that AWS WAF takes when a web request comes from an embargoed country."
+    },
+    "RulePriorityIp": {
+      "Type": "Number",
+      "Default": "100",
+      "Description": "Specifies the order in which the embargoed IPs rule will be evaluated in a WebACL."
+    },
+    "RulePriorityGeo": {
+      "Type": "Number",
+      "Default": "101",
+      "Description": "Specifies the order in which the embargoed country rule will be evaluated in a WebACL."
+    }
+  },
+  "Conditions": {
+    "AlbEndpoint": {"Fn::Equals": [{"Ref": "EndpointType"}, "ALB"]},
+    "CloudFrontEndpoint": {"Fn::Equals": [{"Ref": "EndpointType"}, "CloudFront"]},
+    "CreateWebACL": {"Fn::Equals": [{"Ref": "WebAclId"}, ""]}
+  },
+  "Mappings": {
+    "SourceCode": {
+      "General": {
+        "S3Bucket": "%%BUCKET_NAME%%",
+        "KeyPrefix": "%%BUCKET_KEY_PREFIX%%/%%VERSION%%",
+        "EmbargoedCountriesKey": "%%BUCKET_KEY_PREFIX%%/%%VERSION%%/embargoed-countries.json"
+      }
+    }
+  },
+  "Resources": {
+    "EmbargoedCountriesBucket": {
+      "Type" : "AWS::S3::Bucket",
+      "Properties" : {
+        "AccessControl" : "Private"
+      }
+    },
+    "CopyLambdaCodeRole": {
+      "Type": "AWS::IAM::Role",
+      "DependsOn": ["EmbargoedCountriesBucket"],
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": ["lambda.amazonaws.com"]},"Action": [ "sts:AssumeRole" ]
+          }]
+        },
+        "Path": "/",
+        "RoleName": {"Fn::Join": ["", [{"Ref": "AWS::StackName"}, "CLCRole-", {"Ref": "AWS::Region"}]]},
+        "Policies": [{
+          "PolicyName": {"Fn::Join": ["", [{"Ref": "AWS::StackName"}, "CLCLogPolicy"]]},
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": [
+                "logs:CreateLogGroup",
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+              ],
+              "Resource": {"Fn::Join": ["", ["arn:aws:logs:", {"Ref":"AWS::Region"}, ":", {"Ref":"AWS::AccountId"}, ":log-group:/aws/lambda/*"]]}
+            }]
+          }
+        }, {
+          "PolicyName": {"Fn::Join": ["", [{"Ref": "AWS::StackName"}, "CLCS3Access"]]},
+          "PolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject"
+              ],
+              "Resource": {"Fn::Join": ["", [{"Fn::GetAtt": ["EmbargoedCountriesBucket", "Arn"]}, "/*"]]}
+            }]
+          }
+        }]
+      }
+    },
+    "CopyLambdaCodeFunction": {
+      "Type": "AWS::Lambda::Function",
+      "DependsOn": ["CopyLambdaCodeRole"],
+      "Properties": {
+        "Code": {
+          "ZipFile":  { "Fn::Join": ["\n", [
+            "import boto3",
+            "import json",
+            "from botocore.vendored import requests",
+            "def send_response(event, context):",
+            "    responseBody = {}",
+            "    responseBody['Status'] = 'SUCCESS'",
+            "    responseBody['PhysicalResourceId'] = context.log_stream_name",
+            "    responseBody['StackId'] = event['StackId']",
+            "    responseBody['RequestId'] = event['RequestId']",
+            "    responseBody['LogicalResourceId'] = event['LogicalResourceId']",
+            "    responseBody['NoEcho'] = False",
+            "    responseBody['Data'] = {}",
+            "    json_responseBody = json.dumps(responseBody)",
+            "    headers = {'content-type': '', 'content-length': str(len(json_responseBody))}",
+            "    try:",
+            "        response = requests.put(event['ResponseURL'], data = json_responseBody, headers = headers)",
+            "    except Exception as e:",
+            "        print(e)",
+            "def lambda_handler(event, context):",
+            "    try:",
+            "        print(event)",
+            "        s3_client = boto3.client('s3')",
+            "        request_type = event['RequestType'].upper()",
+            "        source_bucket_name = event['ResourceProperties']['SourceBucketName']",
+            "        dest_bucket_name = event['ResourceProperties']['DestBucketName']",
+            "        object_keys = event['ResourceProperties']['ObjectKeys']",
+            "        if len(object_keys) > 0:",
+            "            # URL Prefix",
+            "            prefix = 'https://s3.amazonaws.com/' + source_bucket_name + '/'",
+            "            response = requests.head(prefix + object_keys[0])",
+            "            if 'x-amz-bucket-region' in response.headers and response.headers['x-amz-bucket-region'] != 'us-east-1':",
+            "                prefix = prefix.replace('https://s3', 'https://s3-'+response.headers['x-amz-bucket-region'])",
+            "            # Process each entry",
+            "            for k in object_keys:",
+            "                try:",
+            "                    file_name =  k.split('/')[-1]",
+            "                    local_file_path = '/tmp/' + file_name",
+            "                    if 'CREATE' in request_type or 'UPDATE' in request_type:",
+            "                        response = requests.get(prefix + k)",
+            "                        open(local_file_path, 'wb').write(response.content)",
+            "                        s3_client.upload_file(local_file_path, dest_bucket_name, k)",
+            "                    elif 'DELETE' in request_type:",
+            "                        s3_client.delete_object(Bucket=dest_bucket_name, Key=k)",
+            "                except Exception as e:",
+            "                    print(e)",
+            "    except Exception as e:",
+            "        print(e)",
+            "    finally:",
+            "        send_response(event, context)"
+          ]]}
+        },
+        "MemorySize": "512",
+        "Handler": "index.lambda_handler",
+        "Role": {"Fn::GetAtt": ["CopyLambdaCodeRole", "Arn"]},
+        "Timeout": "300",
+        "Runtime": "python3.6",
+        "Description": "Copy Lambda Code Function"
+      }
+    },
+    "CopyLambdaCodeEvent": {
+      "Type": "Custom::CopyLambdaCodeEvent",
+      "DependsOn": ["CopyLambdaCodeFunction", "EmbargoedCountriesBucket"],
+      "Properties": {
+        "ServiceToken": {"Fn::GetAtt": ["CopyLambdaCodeFunction","Arn"]},
+        "SourceBucketName": {"Fn::FindInMap": ["SourceCode", "General", "S3Bucket"]},
+        "DestBucketName": {"Ref": "EmbargoedCountriesBucket"},
+        "ObjectKeys": [
+          {"Fn::Join": ["/", [{"Fn::FindInMap": ["SourceCode", "General", "KeyPrefix"]}, "embargoed-countries-parser.zip"]]},
+          {"Fn::Join": ["/", [{"Fn::FindInMap": ["SourceCode", "General", "KeyPrefix"]}, "custom-resource.zip"]]}
+        ]
+      }
+    },
+    "AlbStack": {
+      "Type" : "AWS::CloudFormation::Stack",
+      "Condition": "AlbEndpoint",
+      "DependsOn": ["EmbargoedCountriesBucket", "CopyLambdaCodeEvent"],
+      "Properties" : {
+        "TemplateURL" : {
+          "Fn::Join": ["/", [
+            "https://s3.amazonaws.com",
+            {"Fn::FindInMap": ["SourceCode", "General", "S3Bucket"]},
+            {"Fn::FindInMap": ["SourceCode", "General", "KeyPrefix"]},
+            "aws-waf-embargoed-countries-ofac-alb.template"
+          ]]
+        },
+        "Parameters" : {
+          "WebAclId": {"Ref": "WebAclId"},
+          "S3Bucket": {"Fn::FindInMap": ["SourceCode", "General", "S3Bucket"]},
+          "KeyPrefix": {"Fn::FindInMap": ["SourceCode", "General", "KeyPrefix"]},
+          "LambdaCodeBucket": {"Ref": "EmbargoedCountriesBucket"},
+          "EmbargoedCountriesBucket": {"Ref": "EmbargoedCountriesBucket"},
+          "EmbargoedCountriesKey": {"Fn::FindInMap": ["SourceCode", "General", "EmbargoedCountriesKey"]},
+          "ParentStackName": {"Ref": "AWS::StackName"},
+          "RuleAction": {"Ref": "RuleAction"},
+          "RulePriorityIp": {"Ref": "RulePriorityIp"},
+          "RulePriorityGeo": {"Ref": "RulePriorityGeo"}
+        }
+      }
+    },
+    "CloudFrontStack": {
+      "Type" : "AWS::CloudFormation::Stack",
+      "Condition": "CloudFrontEndpoint",
+      "DependsOn": ["EmbargoedCountriesBucket", "CopyLambdaCodeEvent"],
+      "Properties" : {
+        "TemplateURL" : {
+          "Fn::Join": ["/", [
+            "https://s3.amazonaws.com",
+            {"Fn::FindInMap": ["SourceCode", "General", "S3Bucket"]},
+            {"Fn::FindInMap": ["SourceCode", "General", "KeyPrefix"]},
+            "aws-waf-embargoed-countries-ofac-cloudfront.template"
+          ]]
+        },
+        "Parameters" : {
+          "WebAclId": {"Ref": "WebAclId"},
+          "S3Bucket": {"Fn::FindInMap": ["SourceCode", "General", "S3Bucket"]},
+          "KeyPrefix": {"Fn::FindInMap": ["SourceCode", "General", "KeyPrefix"]},
+          "LambdaCodeBucket": {"Ref": "EmbargoedCountriesBucket"},
+          "EmbargoedCountriesBucket": {"Ref": "EmbargoedCountriesBucket"},
+          "EmbargoedCountriesKey": {"Fn::FindInMap": ["SourceCode", "General", "EmbargoedCountriesKey"]},
+          "ParentStackName": {"Ref": "AWS::StackName"},
+          "RuleAction": {"Ref": "RuleAction"},
+          "RulePriorityIp": {"Ref": "RulePriorityIp"},
+          "RulePriorityGeo": {"Ref": "RulePriorityGeo"}
+        }
+      }
+    }
+  },
+  "Outputs": {
+    "EmbargoedCountriesBucket": {
+      "Description": "Embargoed Countries Bucket",
+      "Value": {"Ref": "EmbargoedCountriesBucket"}
+    }
+  }
+}

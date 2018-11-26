@@ -1,0 +1,26 @@
+{
+    "embargoed-countries": [
+        {"name": "Iraq", "code": "IQ"},
+        {"name": "Iran", "code": "IR"},
+        {"name": "Lebanon", "code": "LB"},
+        {"name": "Belarus", "code": "BY"},
+        {"name": "Burundi", "code": "BI"},
+        {"name": "Libya", "code": "LY"},
+        {"name": "Congo, the Democratic Republic of the", "code": "CD"},
+        {"name": "Cuba", "code": "CU"},
+        {"name": "Central African Republic", "code": "CF"},
+        {"name": "Zimbabwe", "code": "ZW"},
+        {"name": "South Sudan", "code": "SS"},
+        {"name": "Venezuela, Bolivarian Republic of", "code": "VE"},
+        {"name": "Sudan", "code": "SD"},
+        {"name": "Syrian Arab Republic", "code": "SY"},
+        {"name": "Ukraine", "code": "UA"},
+        {"name": "Somalia", "code": "SO"}
+    ],
+    "embargoed-ips": [
+        {
+            "name": "North Korea",
+            "ips": [{"Type": "IPV4", "Value": "175.45.176.0/22"}]
+        }
+    ]
+}
