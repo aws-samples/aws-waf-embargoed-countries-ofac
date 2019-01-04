@@ -1,10 +1,10 @@
-## AWS Waf Embargoed Countries Ofac
+## How to use AWS WAF to filter incoming traffic from embargoed countries
 
-The article provides a push-button solution to protect your infrastructure against incoming traffic from embargoed countries as defined by OFAC.
+This project provides you with an automated solution that applies geography-based IP (GeoIP) restrictions based on a descriptive JSON file that lists all the locations that you want to block.
 
 ## Authors
 [Heitor Vital](https://github.com/hvital) & [Rajat Ravinder Varuni](https://github.com/varunirv)
- 
+
 ## Building Lambda Package
 ```bash
 cd deployment
