@@ -161,9 +161,8 @@ def configure_embargoed_countries_bucket(oring_bucket, embargoed_countries_bucke
 
     prefix = 'https://s3.amazonaws.com/' + oring_bucket + '/'
     response = requests.head(prefix + embargoed_countries_key)
-    region_code = response.headers['x-amz-bucket-region']
-    if region_code != 'us-east-1':
-        prefix = prefix.replace('https://s3', 'https://s3-'+region_code)
+    if 'x-amz-bucket-region' in response.headers and response.headers['x-amz-bucket-region'] != 'us-east-1':
+        prefix = prefix.replace('https://s3', 'https://s3-'+response.headers['x-amz-bucket-region'])
     response = requests.get(prefix + embargoed_countries_key)
     open(local_file_path, 'wb').write(response.content)
 
