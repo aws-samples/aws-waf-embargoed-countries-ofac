@@ -3,7 +3,8 @@
 This project provides you with an automated solution that applies geography-based IP (GeoIP) restrictions based on a descriptive JSON file that lists all the locations that you want to block.
 
 ## Authors
-[Heitor Vital](https://github.com/hvital) & [Rajat Ravinder Varuni](https://github.com/varunirv)
+[Rajat Ravinder Varuni](https://github.com/varunirv) & 
+[Heitor Vital](https://github.com/hvital)  
 
 ## Building Lambda Package
 ```bash
